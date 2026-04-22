@@ -1,0 +1,95 @@
+"""
+全局配置：URL模板、颜色→状态映射、数据根目录
+楼栋列表在运行时动态从楼盘列表页获取，此处 BUILDINGS 仅作初始参考备份。
+
+使用说明：
+1. 复制本文件为 config.py: cp config.py.example config.py
+2. 在 config.py 中填入你的推送配置（DINGTALK_WEBHOOK 等）
+"""
+
+import os
+
+# ── 路径 ──────────────────────────────────────────────────────────────
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+# ── 项目参数 ──────────────────────────────────────────────────────────
+PROJECT_ID = "8017587"
+SYSTEM_ID  = "2"
+SRC_ID     = "1"
+
+# ── URL 模板 ──────────────────────────────────────────────────────────
+URL_MAIN = (
+    "http://bjjs.zjw.beijing.gov.cn/eportal/ui"
+    "?pageId=320794&projectID={project_id}&systemID={system_id}&srcId={src_id}"
+).format(project_id=PROJECT_ID, system_id=SYSTEM_ID, src_id=SRC_ID)
+
+# 楼盘列表页（rowcount 设大值以获取全部楼栋，动态获取实际数量后无需翻页）
+URL_BUILDING_LIST = (
+    "http://bjjs.zjw.beijing.gov.cn/eportal/ui"
+    "?pageId=411612&systemId={system_id}&srcId={src_id}&id={project_id}&rowcount=100"
+).format(project_id=PROJECT_ID, system_id=SYSTEM_ID, src_id=SRC_ID)
+
+# 单栋楼盘表页（占位符 {building_id} 运行时替换）
+URL_BUILDING_DETAIL = (
+    "http://bjjs.zjw.beijing.gov.cn/eportal/ui"
+    "?pageId=320833&systemId={system_id}&categoryId=1"
+    "&salePermitId={project_id}&buildingId={{building_id}}"
+).format(project_id=PROJECT_ID, system_id=SYSTEM_ID)
+
+# ── 颜色 → 状态映射（统一小写比较） ──────────────────────────────────
+COLOR_STATUS_MAP = {
+    "#33cc00": "可售",
+    "#ff0000": "已签约",
+    "#ffcc99": "已预订",
+    "#d2691e": "网上联机备案",
+    "#ffff00": "已办理预售项目抵押",
+    "#00ffff": "资格核验中",
+    "#cccccc": "不可售",
+}
+
+# ── 已知楼栋参考备份（实际采集以当天页面动态列表为准） ────────────────
+BUILDINGS_FALLBACK = {
+    "5-1#住宅楼":  "565871",
+    "5-2#住宅楼":  "565810",
+    "5-4#住宅楼":  "565813",
+    "5-5#住宅楼":  "565812",
+    "5-6#住宅楼":  "565814",
+    "5-7#住宅楼":  "565815",
+    "5-8#住宅楼":  "565872",
+    "5-9#住宅楼":  "565816",
+    "5-10#住宅楼": "565817",
+    "5-11#住宅楼": "565818",
+    "5-12#住宅楼": "565819",
+    "5-13#住宅楼": "565820",
+    "5-14#住宅楼": "565821",
+    "5-15#住宅楼": "565882",
+    "5-16#住宅楼": "565883",
+    "5-17#住宅楼": "565884",
+}
+
+# ── 请求配置 ──────────────────────────────────────────────────────────
+REQUEST_DELAY   = 1.5   # 每次请求间隔（秒）
+REQUEST_RETRIES = 3     # 失败重试次数
+REQUEST_TIMEOUT = 30    # 超时秒数
+REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer":         "http://bjjs.zjw.beijing.gov.cn/",
+}
+
+# ── 推送配置（任选其一）───────────────────────────────────────────────
+# 方案1: 钉钉群机器人（推荐）
+# DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=xxx"
+
+# 方案2: Server酱
+# SERVERCHAN_KEY = "SCTxxx"
+
+# 方案3: WxPusher
+# WXPUSHER_APP_TOKEN = "AT_xxx"
+# WXPUSHER_UID = "UID_xxx"

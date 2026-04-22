@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Data
+data/
+*.csv
+*.log
+
+# macOS
+.DS_Store
+
+# Config with secrets
+config.py
