@@ -84,12 +84,16 @@ REQUEST_HEADERS = {
 }
 
 # ── 推送配置（任选其一）───────────────────────────────────────────────
-# 方案1: 钉钉群机器人（推荐）
+# 方案1: 飞书群机器人（推荐，最简单，支持多人）
+# FEISHU_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+# 安全设置建议：自定义关键词 = "日报"
+
+# 方案2: 钉钉群机器人
 # DINGTALK_WEBHOOK = "https://oapi.dingtalk.com/robot/send?access_token=xxx"
 
-# 方案2: Server酱
+# 方案3: Server酱
 # SERVERCHAN_KEY = "SCTxxx"
 
-# 方案3: WxPusher
+# 方案4: WxPusher
 # WXPUSHER_APP_TOKEN = "AT_xxx"
 # WXPUSHER_UID = "UID_xxx"
