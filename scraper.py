@@ -245,67 +245,132 @@ def parse_building_list(html: str) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 解析：房间详情页
+# 从楼盘表 HTML 解析房间号 + 状态（不进入详情页）
 # ─────────────────────────────────────────────────────────────────────
 
-def parse_house_detail(html: str, building_name: str, status: str) -> dict | None:
+def parse_houses_from_building_html(html: str, building_name: str) -> list[dict]:
     """
-    解析单个房间详情页，返回房间信息字典。
-    字段：楼栋、房间号、单元、房号、建筑面积、套内面积、户型、拟售单价、状态
+    直接从楼盘表页面 HTML 解析所有可见房间的房间号和颜色状态。
+    返回列表，每条记录：楼栋、房间号、单元、房号、状态
+    不进入任何详情页，建筑面积/户型等静态字段由调用方从历史数据补充。
     """
     soup = BeautifulSoup(html, "lxml")
+    color_re = re.compile(r"background[:\s]*(#[0-9a-fA-F]{3,6})", re.IGNORECASE)
+    houses: list[dict] = []
+    seen: set[str] = set()
 
-    # 按 <td>字段名</td><td>值</td> 模式提取
-    field_map = {
-        "房 间 号":         "房间号",
-        "房间号":           "房间号",
-        "规划设计用途":     "规划设计用途",
-        "户　　型":         "户型",
-        "户型":             "户型",
-        "建筑面积":         "建筑面积",
-        "套内面积":         "套内面积",
-        "按建筑面积拟售单价": "拟售单价",
-    }
+    # 可点击房号链接（<a href*="houseId">）
+    for a in soup.find_all("a", href=True):
+        if "houseId" not in a["href"]:
+            continue
+        room_no = a.get_text(strip=True)
+        if not room_no:
+            continue
 
-    data: dict = {"楼栋": building_name, "状态": status}
-
-    tds = soup.find_all("td")
-    for i, td in enumerate(tds):
-        key_raw = td.get_text(strip=True)
-        # 移除全角空格/不可见字符后匹配
-        key_clean = key_raw.replace("\u3000", "").replace(" ", "").strip()
-        for pattern, field in field_map.items():
-            pattern_clean = pattern.replace("\u3000", "").replace(" ", "").strip()
-            if key_clean == pattern_clean and i + 1 < len(tds):
-                val = tds[i + 1].get_text(strip=True)
-                # 面积/单价只取数字
-                if field in ("建筑面积", "套内面积", "拟售单价"):
-                    m = re.search(r"[\d.]+", val)
-                    val = m.group() if m else val
-                if field not in data or not data[field]:
-                    data[field] = val
+        # 从父元素的 style 属性提取背景颜色
+        color = ""
+        parent = a.parent
+        for _ in range(4):           # 最多向上找4层
+            if parent is None:
                 break
+            style = parent.get("style", "")
+            m = color_re.search(style)
+            if m:
+                color = m.group(1).lower()
+                break
+            parent = parent.parent
 
-    # 从房间号拆分单元和房号
-    room_no = data.get("房间号", "")
-    if room_no:
-        # 格式通常为 "1单元-702" 或 "2单元-1201"
-        m = re.match(r"^(.+单元)[_\-–]?(.+)$", room_no)
-        if m:
-            data["单元"] = m.group(1)
-            data["房号"] = m.group(2)
+        status = COLOR_STATUS_MAP.get(color, "可售")
+
+        # 尝试从链接文本旁解析单元信息
+        # 房间号格式通常 "702" 或 "1单元-702"，单元信息在更外层 td 的文本中
+        unit = ""
+        cell = a.find_parent("td") or a.find_parent("div")
+        if cell:
+            # 向上找含"单元"字样的祖先文本
+            for ancestor in cell.parents:
+                ancestor_text = ancestor.get_text(separator=" ", strip=True)
+                m_unit = re.search(r"(\d+单元)", ancestor_text)
+                if m_unit:
+                    unit = m_unit.group(1)
+                    break
+                if ancestor.name in ("table", "body"):
+                    break
+
+        # 拼装标准房间号 "1单元-702"
+        if unit and not re.match(r"^\d+单元", room_no):
+            full_room_no = f"{unit}-{room_no}"
         else:
-            data["单元"] = ""
-            data["房号"] = room_no
-    else:
-        data["单元"] = ""
-        data["房号"] = ""
+            full_room_no = room_no
 
-    return data
+        if full_room_no in seen:
+            continue
+        seen.add(full_room_no)
+
+        # 拆分单元和房号
+        m_split = re.match(r"^(.+单元)[_\-–]?(.+)$", full_room_no)
+        if m_split:
+            unit_val = m_split.group(1)
+            room_val = m_split.group(2)
+        else:
+            unit_val = unit
+            room_val = full_room_no
+
+        houses.append({
+            "楼栋":  building_name,
+            "房间号": full_room_no,
+            "单元":  unit_val,
+            "房号":  room_val,
+            "状态":  status,
+        })
+
+    return houses
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 核心：单栋楼 Playwright 逐户采集
+# 从历史 CSV 构建静态房间信息字典（建筑面积/套内面积/户型/拟售单价）
+# ─────────────────────────────────────────────────────────────────────
+
+def load_static_house_info(building_name: str) -> dict[str, dict]:
+    """
+    扫描 DATA_DIR 下所有历史日期，找最早包含该楼栋 house_status CSV 的记录，
+    返回 {房间号: {建筑面积, 套内面积, 户型, 拟售单价}} 字典。
+    """
+    data_root = Path(DATA_DIR)
+    date_pat = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    safe_name = re.sub(r'[\\/:*?"<>|]', "_", building_name)
+    static_info: dict[str, dict] = {}
+
+    # 按日期升序遍历，越早的数据越完整（包含已售出房间）
+    date_dirs = sorted(
+        [d for d in data_root.iterdir() if d.is_dir() and date_pat.match(d.name)],
+        key=lambda d: d.name,
+    )
+    for d in date_dirs:
+        csv_path = d / f"house_status_{safe_name}.csv"
+        if not csv_path.exists():
+            continue
+        try:
+            df = pd.read_csv(csv_path)
+            for _, row in df.iterrows():
+                room_no = str(row.get("房间号", "")).strip()
+                if not room_no or room_no in static_info:
+                    continue
+                static_info[room_no] = {
+                    "建筑面积": row.get("建筑面积", ""),
+                    "套内面积": row.get("套内面积", ""),
+                    "户型":    row.get("户型", ""),
+                    "拟售单价": row.get("拟售单价", ""),
+                }
+        except Exception as e:
+            logger.warning(f"[static_info] 读取失败 {csv_path}: {e}")
+
+    logger.info(f"  [{building_name}] 历史静态信息: {len(static_info)} 条")
+    return static_info
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 核心：单栋楼 Playwright 采集（仅楼盘表页面，不进入详情页）
 # ─────────────────────────────────────────────────────────────────────
 
 async def _fetch_building_houses_async(
@@ -315,15 +380,14 @@ async def _fetch_building_houses_async(
     html_dir: Path,
 ) -> list[dict]:
     """
-    用 Playwright 加载楼盘表页面，找出所有可点击房号链接，
-    逐一进入详情页抓取房间信息。
-    返回该楼栋所有可售户的信息列表（不可点击的跳过）。
+    用 Playwright 加载楼盘表页面，截图+保存 HTML，
+    直接从页面 HTML 解析所有可点击房号及颜色状态。
+    不进入详情页，静态字段（建筑面积/户型等）由调用方从历史数据补充。
     """
     from playwright.async_api import async_playwright
 
     url = URL_BUILDING_DETAIL.format(building_id=building_id)
-    color_re = re.compile(r"background[:\s]*(#[0-9a-fA-F]{3,6})", re.IGNORECASE)
-    houses: list[dict] = []
+    safe_name = re.sub(r'[\\/:*?"<>|]', "_", building_name)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -331,16 +395,15 @@ async def _fetch_building_houses_async(
             viewport={"width": 1440, "height": 900},
             user_agent=REQUEST_HEADERS["User-Agent"],
         )
+        page = await context.new_page()
 
         # ── 1. 加载楼盘表页面 ──────────────────────────────────────────
-        page = await context.new_page()
         try:
             await page.goto(url, wait_until="networkidle", timeout=60_000)
         except Exception as e:
             logger.warning(f"[fetch_houses] 楼盘表加载超时，尝试继续: {e}")
 
-        # 截图
-        safe_name = re.sub(r'[\\/:*?"<>|]', "_", building_name)
+        # ── 2. 截图 ────────────────────────────────────────────────────
         try:
             await page.screenshot(
                 path=str(shots_dir / f"house_{safe_name}.png"),
@@ -349,75 +412,16 @@ async def _fetch_building_houses_async(
         except Exception as e:
             logger.warning(f"[fetch_houses] 截图失败 {building_name}: {e}")
 
-        # 保存原始 HTML
+        # ── 3. 保存原始 HTML ───────────────────────────────────────────
         building_html = await page.content()
         (html_dir / f"house_{safe_name}.html").write_text(building_html, encoding="utf-8")
-
-        # ── 2. 收集所有可点击房号链接及其颜色（状态） ──────────────────
-        house_links = await page.query_selector_all('a[href*="houseId"]')
-        logger.info(f"  [{building_name}] 找到可点击房号: {len(house_links)} 个")
-
-        # 预先收集 href 和颜色，避免点击后元素失效
-        link_infos: list[tuple[str, str]] = []
-        for a in house_links:
-            href = await a.get_attribute("href") or ""
-            # 从父 div 的 style 获取背景颜色
-            parent_div = await a.evaluate_handle("el => el.closest('div[style*=\"background\"]')")
-            color = ""
-            try:
-                style_val = await parent_div.get_property("style")
-                style_str = await style_val.json_value()
-                # style_str 是 CSSStyleDeclaration 对象，直接取 background
-                bg = await parent_div.evaluate("el => el.style.background || el.style.backgroundColor")
-                # 转换 rgb() → hex 或直接取 hex
-                if bg:
-                    if bg.startswith("#"):
-                        color = bg.lower()
-                    elif bg.startswith("rgb"):
-                        nums = re.findall(r"\d+", bg)
-                        if len(nums) >= 3:
-                            color = "#{:02x}{:02x}{:02x}".format(*[int(x) for x in nums[:3]])
-            except Exception:
-                pass
-            if not color:
-                # fallback：从 href 上层 HTML 片段解析
-                try:
-                    outer = await a.evaluate("el => el.parentElement ? el.parentElement.outerHTML : ''")
-                    m = color_re.search(outer)
-                    if m:
-                        color = m.group(1).lower()
-                except Exception:
-                    pass
-
-            status = COLOR_STATUS_MAP.get(color, "可售" if color else "可售")
-            link_infos.append((href, status))
-
-        # ── 3. 逐一访问详情页 ──────────────────────────────────────────
-        base_url = "http://bjjs.zjw.beijing.gov.cn"
-        for idx, (href, status) in enumerate(link_infos):
-            detail_url = base_url + href if href.startswith("/") else href
-            detail_page = await context.new_page()
-            try:
-                await detail_page.goto(detail_url, wait_until="networkidle", timeout=30_000)
-                detail_html = await detail_page.content()
-                house = parse_house_detail(detail_html, building_name, status)
-                if house and house.get("房间号"):
-                    houses.append(house)
-                    logger.debug(f"    [{idx+1}/{len(link_infos)}] {house.get('房间号')} "
-                                 f"建面={house.get('建筑面积')} 套内={house.get('套内面积')}")
-                else:
-                    logger.warning(f"    [{idx+1}/{len(link_infos)}] 详情页解析失败: {detail_url}")
-            except Exception as e:
-                logger.warning(f"    [{idx+1}/{len(link_infos)}] 详情页加载失败: {detail_url}: {e}")
-            finally:
-                await detail_page.close()
-
-            # 小延迟避免请求过快
-            await asyncio.sleep(0.8)
 
         await page.close()
         await browser.close()
 
+    # ── 4. 从 HTML 直接解析房间+状态（不进详情页） ────────────────────
+    houses = parse_houses_from_building_html(building_html, building_name)
+    logger.info(f"  [{building_name}] 从楼盘表解析到房间: {len(houses)} 个")
     return houses
 
 
@@ -527,6 +531,16 @@ def run_scraper(date_str: str | None = None) -> str:
         houses = fetch_building_houses(building_id, building_name, shots_dir, html_dir)
 
         if houses:
+            # 用历史 CSV 补充静态字段（建筑面积/套内面积/户型/拟售单价）
+            static_info = load_static_house_info(building_name)
+            for h in houses:
+                room_no = h.get("房间号", "")
+                info = static_info.get(room_no, {})
+                h.setdefault("建筑面积", info.get("建筑面积", ""))
+                h.setdefault("套内面积", info.get("套内面积", ""))
+                h.setdefault("户型",    info.get("户型", ""))
+                h.setdefault("拟售单价", info.get("拟售单价", ""))
+
             # CSV 列顺序：楼栋、房间号、单元、房号、建筑面积、套内面积、户型、拟售单价、状态
             col_order = ["楼栋", "房间号", "单元", "房号", "建筑面积", "套内面积", "户型", "拟售单价", "状态"]
             df = pd.DataFrame(houses)

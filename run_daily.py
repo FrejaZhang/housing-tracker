@@ -86,7 +86,14 @@ def main():
     except KeyboardInterrupt:
         logger.info("用户中断")
     except Exception as e:
+        import traceback
         logger.exception(f"执行异常: {e}")
+        # ── 推送失败告警 ──────────────────────────────────────────────
+        try:
+            from notifier import send_failure_alert
+            send_failure_alert(date_str, error_msg=traceback.format_exc())
+        except Exception as notify_err:
+            logger.warning(f"失败告警推送异常: {notify_err}")
         sys.exit(1)
     finally:
         logger.info(f"====== 任务结束: {date_str} ======")

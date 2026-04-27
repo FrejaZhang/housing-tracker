@@ -151,6 +151,10 @@ def build_report(date_str: str) -> tuple[str, str]:
                 lines.append(f"- 新增签约面积：{new_area_f:+,.2f} ㎡")
                 lines.append(f"- 新增签约金额：{new_total_f:+,.0f} 元")
                 lines.append(f"- 均价变动：{prev_p_f:,.0f} → {today_p_f:,.0f} 元/㎡（{price_arrow}{abs(price_diff):,.0f}）")
+                # 若当日存在房屋变动，额外计算新增签约单价
+                if house_changes and new_area_f > 0:
+                    new_unit_price = new_total_f / new_area_f
+                    lines.append(f"- 新增签约单价：**{new_unit_price:,.0f} 元/㎡**（新增签约金额 / 新增签约面积）")
             except Exception:
                 lines.append(f"- {r.get('备注', '')}")
         lines.append("")
@@ -169,13 +173,21 @@ def build_report(date_str: str) -> tuple[str, str]:
                 hno  = str(r.get("房号", "")).strip()
                 room = f"{unit}-{hno}" if unit and hno else (unit or hno or "?")
             status_today = str(r.get("今日状态", ""))
-            building_map.setdefault(building, []).append(f"{room}({status_today})")
+
+            # 补充建筑面积和户型
+            area   = str(r.get("建筑面积", "") or "").strip()
+            layout = str(r.get("户型", "") or "").strip()
+            detail_parts = [f"{room}({status_today})"]
+            if area:
+                detail_parts.append(f"{area}㎡")
+            if layout:
+                detail_parts.append(layout)
+            building_map.setdefault(building, []).append(" ".join(detail_parts))
 
         for bld, rooms in sorted(building_map.items()):
-            rooms_str = "、".join(rooms[:10])
-            if len(rooms) > 10:
-                rooms_str += f"…等{len(rooms)}套"
-            lines.append(f"- **{bld}**：{rooms_str}")
+            lines.append(f"- **{bld}**：")
+            for room_info in rooms:
+                lines.append(f"  - {room_info}")
         lines.append("")
     else:
         lines.append("### 🏘 房屋状态变动")
@@ -369,6 +381,44 @@ def send_report(date_str: str | None = None) -> bool:
             "  Server酱: SERVERCHAN_KEY=xxx\n"
             "  WxPusher: WXPUSHER_APP_TOKEN=xxx  WXPUSHER_UID=xxx"
         )
+    return ok
+
+
+def send_failure_alert(date_str: str | None = None, error_msg: str = "") -> bool:
+    """
+    推送任务运行失败告警到已配置的渠道（飞书优先）。
+    date_str  : 失败的任务日期
+    error_msg : 异常信息摘要
+    """
+    if date_str is None:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    title = f"❌ 楼盘数据采集失败 · {date_str}"
+
+    lines = [
+        f"## {title}",
+        "",
+        f"**日期**：{date_str}",
+        f"**时间**：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "### 错误信息",
+        f"```\n{error_msg[:800]}\n```" if error_msg else "（无详细错误信息）",
+        "",
+        "---",
+        "*请检查日志文件或手动重新运行 `python run_daily.py`*",
+    ]
+    content = "\n".join(lines)
+
+    logger.info(f"推送失败告警: {title}")
+
+    ok = False
+    ok = push_feishu(title, content)     or ok
+    ok = push_dingtalk(title, content)   or ok
+    ok = push_serverchan(title, content) or ok
+    ok = push_wxpusher(title, content)   or ok
+
+    if not ok:
+        logger.warning("失败告警推送也未成功，请检查推送渠道配置")
     return ok
 
 

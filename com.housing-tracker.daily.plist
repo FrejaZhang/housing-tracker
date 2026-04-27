@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 任务唯一标识 -->
+    <key>Label</key>
+    <string>com.housing-tracker.daily</string>
+
+    <!-- 执行命令 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON_BIN__</string>
+        <string>__SCRIPT_DIR__/run_daily.py</string>
+    </array>
+
+    <!-- 工作目录（确保相对路径正确） -->
+    <key>WorkingDirectory</key>
+    <string>__SCRIPT_DIR__</string>
+
+    <!-- 触发时间：每天 0 时 10 分（可修改 Hour/Minute） -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>__HOUR__</integer>
+        <key>Minute</key>
+        <integer>__MINUTE__</integer>
+    </dict>
+
+    <!-- 标准输出 & 错误 均写入 cron.log -->
+    <key>StandardOutPath</key>
+    <string>__SCRIPT_DIR__/cron.log</string>
+    <key>StandardErrorPath</key>
+    <string>__SCRIPT_DIR__/cron.log</string>
+
+    <!-- 启动时若错过（睡眠期间），下次唤醒后补跑一次 -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- 环境变量：让 PATH 包含 conda/brew 路径 -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__PYTHON_DIR__:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>LANG</key>
+        <string>zh_CN.UTF-8</string>
+    </dict>
+</dict>
+</plist>
