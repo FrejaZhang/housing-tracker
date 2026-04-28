@@ -151,8 +151,9 @@ def build_report(date_str: str) -> tuple[str, str]:
                 lines.append(f"- 新增签约面积：{new_area_f:+,.2f} ㎡")
                 lines.append(f"- 新增签约金额：{new_total_f:+,.0f} 元")
                 lines.append(f"- 均价变动：{prev_p_f:,.0f} → {today_p_f:,.0f} 元/㎡（{price_arrow}{abs(price_diff):,.0f}）")
-                # 若当日存在房屋变动，额外计算新增签约单价
-                if house_changes and new_area_f > 0:
+                # 若当日存在网上联机备案（真正签约）变动，额外计算新增签约单价
+                signed_house_changes = [r for r in house_changes if str(r.get("今日状态", "")) == "网上联机备案"]
+                if signed_house_changes and new_area_f > 0:
                     new_unit_price = new_total_f / new_area_f
                     lines.append(f"- 新增签约单价：**{new_unit_price:,.0f} 元/㎡**（新增签约金额 / 新增签约面积）")
             except Exception:
@@ -161,37 +162,82 @@ def build_report(date_str: str) -> tuple[str, str]:
 
     # 逐户状态变动
     if house_changes:
+        # 按状态分类
+        signed_changes    = [r for r in house_changes if str(r.get("今日状态", "")) == "网上联机备案"]
+        reserved_changes  = [r for r in house_changes if str(r.get("今日状态", "")) == "已预订"]
+        other_changes     = [r for r in house_changes if str(r.get("今日状态", "")) not in ("网上联机备案", "已预订")]
+
         lines.append(f"### 🏘 房屋状态变动（共 {len(house_changes)} 套）")
 
-        # 按楼栋分组
-        building_map: dict[str, list[str]] = {}
-        for r in house_changes:
-            building = str(r.get("楼栋", "未知楼栋"))
+        def _fmt_room(r: dict) -> str:
             room = str(r.get("房间号", "") or "").strip()
             if not room:
                 unit = str(r.get("单元", "")).strip()
                 hno  = str(r.get("房号", "")).strip()
                 room = f"{unit}-{hno}" if unit and hno else (unit or hno or "?")
             status_today = str(r.get("今日状态", ""))
-
-            # 补充建筑面积和户型
             area   = str(r.get("建筑面积", "") or "").strip()
             layout = str(r.get("户型", "") or "").strip()
-            detail_parts = [f"{room}({status_today})"]
+            parts = [f"{room}({status_today})"]
             if area:
-                detail_parts.append(f"{area}㎡")
+                parts.append(f"{area}㎡")
             if layout:
-                detail_parts.append(layout)
-            building_map.setdefault(building, []).append(" ".join(detail_parts))
+                parts.append(layout)
+            return " ".join(parts)
 
-        for bld, rooms in sorted(building_map.items()):
-            lines.append(f"- **{bld}**：")
-            for room_info in rooms:
-                lines.append(f"  - {room_info}")
+        def _render_group(title: str, records: list[dict]) -> None:
+            if not records:
+                return
+            lines.append(f"**{title}**（{len(records)} 套）")
+            building_map: dict[str, list[str]] = {}
+            for r in records:
+                building = str(r.get("楼栋", "未知楼栋"))
+                building_map.setdefault(building, []).append(_fmt_room(r))
+            for bld, rooms in sorted(building_map.items()):
+                lines.append(f"- **{bld}**：")
+                for room_info in rooms:
+                    lines.append(f"  - {room_info}")
+
+        _render_group("🟤 网上联机备案（已签约，计入面积）", signed_changes)
+        _render_group("🩷 已预订（未签约，不计入面积）", reserved_changes)
+        _render_group("📋 其他状态变动", other_changes)
         lines.append("")
     else:
         lines.append("### 🏘 房屋状态变动")
         lines.append("- 今日无房屋状态变动")
+        lines.append("")
+
+    # ── 各面积段剩余可售套数 ─────────────────────────────────────────
+    area_groups = [
+        ("约70㎡",  70, 2),
+        ("约75㎡",  75, 2),
+        ("约86㎡",  86, 2),
+        ("约92㎡",  92, 2),
+        ("约97㎡",  97, 2),
+        ("约107㎡", 107, 2),
+        ("约132㎡", 132, 2),
+    ]
+
+    # 读取今日所有楼栋可售状态 CSV
+    avail_dfs = []
+    for csv_f in sorted(today_dir.glob("house_status_*.csv")):
+        try:
+            _df = pd.read_csv(csv_f)
+            avail_dfs.append(_df)
+        except Exception:
+            pass
+
+    if avail_dfs:
+        df_avail = pd.concat(avail_dfs, ignore_index=True)
+        df_avail = df_avail[df_avail["状态"] == "可售"].copy()
+        df_avail["建筑面积"] = pd.to_numeric(df_avail["建筑面积"], errors="coerce")
+
+        total_avail = len(df_avail)
+        lines.append(f"### 🏗 各户型剩余可售套数（建筑面积）")
+        for label, center, tol in area_groups:
+            cnt = int(((df_avail["建筑面积"] - center).abs() <= tol).sum())
+            lines.append(f"- {label}（{center-tol}~{center+tol}㎡）：**{cnt} 套**")
+        lines.append(f"- **合计可售：{total_avail} 套**")
         lines.append("")
 
     lines.append("---")

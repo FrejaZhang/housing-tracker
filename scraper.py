@@ -253,58 +253,62 @@ def parse_houses_from_building_html(html: str, building_name: str) -> list[dict]
     直接从楼盘表页面 HTML 解析所有可见房间的房间号和颜色状态。
     返回列表，每条记录：楼栋、房间号、单元、房号、状态
     不进入任何详情页，建筑面积/户型等静态字段由调用方从历史数据补充。
+
+    解析策略：
+      - <a href*="houseId">  → 可点击房间（绿色可售）
+      - <a href="#">         → 不可点击但有颜色的房间（已预订粉色/网上联机备案棕色等）
+      两类均需记录，确保追踪所有非"不可售"状态的房间。
     """
     soup = BeautifulSoup(html, "lxml")
     color_re = re.compile(r"background[:\s]*(#[0-9a-fA-F]{3,6})", re.IGNORECASE)
     houses: list[dict] = []
     seen: set[str] = set()
 
-    # 可点击房号链接（<a href*="houseId">）
-    for a in soup.find_all("a", href=True):
-        if "houseId" not in a["href"]:
-            continue
-        room_no = a.get_text(strip=True)
-        if not room_no:
-            continue
-
-        # 从父元素的 style 属性提取背景颜色
-        color = ""
-        parent = a.parent
-        for _ in range(4):           # 最多向上找4层
+    def _extract_color(a_tag) -> str:
+        """从 <a> 标签向上最多4层找背景颜色，返回小写十六进制色码或空串。"""
+        parent = a_tag.parent
+        for _ in range(4):
             if parent is None:
                 break
             style = parent.get("style", "")
             m = color_re.search(style)
             if m:
-                color = m.group(1).lower()
-                break
+                return m.group(1).lower()
             parent = parent.parent
+        return ""
 
-        status = COLOR_STATUS_MAP.get(color, "可售")
+    def _extract_unit(a_tag) -> str:
+        """向上遍历祖先，找含'单元'字样的文本，返回如 '1单元'。"""
+        cell = a_tag.find_parent("td") or a_tag.find_parent("div")
+        if not cell:
+            return ""
+        for ancestor in cell.parents:
+            ancestor_text = ancestor.get_text(separator=" ", strip=True)
+            m_unit = re.search(r"(\d+单元)", ancestor_text)
+            if m_unit:
+                return m_unit.group(1)
+            if ancestor.name in ("table", "body"):
+                break
+        return ""
 
-        # 尝试从链接文本旁解析单元信息
-        # 房间号格式通常 "702" 或 "1单元-702"，单元信息在更外层 td 的文本中
-        unit = ""
-        cell = a.find_parent("td") or a.find_parent("div")
-        if cell:
-            # 向上找含"单元"字样的祖先文本
-            for ancestor in cell.parents:
-                ancestor_text = ancestor.get_text(separator=" ", strip=True)
-                m_unit = re.search(r"(\d+单元)", ancestor_text)
-                if m_unit:
-                    unit = m_unit.group(1)
-                    break
-                if ancestor.name in ("table", "body"):
-                    break
+    def _add_house(room_no: str, color: str, unit_hint: str = "") -> None:
+        """将解析结果加入 houses 列表（去重）。"""
+        if not room_no:
+            return
+
+        # 忽略"不可售"灰色房间（#cccccc）
+        status = COLOR_STATUS_MAP.get(color, "")
+        if not status or status == "不可售":
+            return
 
         # 拼装标准房间号 "1单元-702"
-        if unit and not re.match(r"^\d+单元", room_no):
-            full_room_no = f"{unit}-{room_no}"
+        if unit_hint and not re.match(r"^\d+单元", room_no):
+            full_room_no = f"{unit_hint}-{room_no}"
         else:
             full_room_no = room_no
 
         if full_room_no in seen:
-            continue
+            return
         seen.add(full_room_no)
 
         # 拆分单元和房号
@@ -313,7 +317,7 @@ def parse_houses_from_building_html(html: str, building_name: str) -> list[dict]
             unit_val = m_split.group(1)
             room_val = m_split.group(2)
         else:
-            unit_val = unit
+            unit_val = unit_hint
             room_val = full_room_no
 
         houses.append({
@@ -323,6 +327,28 @@ def parse_houses_from_building_html(html: str, building_name: str) -> list[dict]
             "房号":  room_val,
             "状态":  status,
         })
+
+    # ── 解析所有 <a> 标签（含 houseId 的可点击 + href="#" 的状态房间） ──
+    for a in soup.find_all("a", href=True):
+        href = a.get("href", "")
+        room_no = a.get_text(strip=True)
+        if not room_no:
+            continue
+
+        # 仅处理：进入详情页的（houseId）或占位锚点（#）
+        if "houseId" not in href and href != "#":
+            continue
+
+        color = _extract_color(a)
+        if not color:
+            # houseId 链接若无颜色，默认可售
+            if "houseId" in href:
+                color = "#33cc00"
+            else:
+                continue
+
+        unit = _extract_unit(a)
+        _add_house(room_no, color, unit)
 
     return houses
 
